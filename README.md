@@ -91,4 +91,4 @@ python main.py
 
 ## 许可证
 
-本项目采用GUNv2.1许可证，详见LICENSE文件。 
+本项目采用GUN v3许可证，详见LICENSE文件。 
