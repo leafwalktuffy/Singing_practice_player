@@ -1,6 +1,5 @@
 import sys
 import os
-import json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QWidget, QPushButton, QSlider, QLabel, QFileDialog, 
                              QProgressBar, QGroupBox, QGridLayout, QFrame)
@@ -8,46 +7,6 @@ from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtCore import QUrl
 import time
-
-class ClickJumpSlider(QSlider):
-    """支持精确点击跳转的进度条 - 安全简化版本"""
-    
-    def __init__(self, orientation, parent=None, slider_type="progress"):
-        super().__init__(orientation, parent)
-        self._parent_player = None
-        self._slider_type = slider_type  # "progress" 或 "volume"
-        
-    def set_parent_player(self, parent_player):
-        """设置父播放器引用，用于回调"""
-        self._parent_player = parent_player
-        
-    def mousePressEvent(self, event):
-        """安全的点击跳转实现"""
-        if event.button() == Qt.LeftButton and self.orientation() == Qt.Horizontal:
-            # 计算点击位置
-            click_pos = event.x()
-            slider_width = self.width()
-            
-            if slider_width > 0:
-                # 简单的比例计算
-                value_ratio = click_pos / slider_width
-                new_value = int(value_ratio * (self.maximum() - self.minimum()) + self.minimum())
-                new_value = max(self.minimum(), min(self.maximum(), new_value))
-                
-                # 设置新值
-                self.setValue(new_value)
-                
-                # 通知父播放器，根据滑块类型调用不同方法
-                if self._parent_player:
-                    if self._slider_type == "progress":
-                        self._parent_player.on_progress_clicked(new_value)
-                    elif self._slider_type == "volume":
-                        self._parent_player.on_volume_clicked(new_value)
-                    
-        # 调用父类方法保持正常拖动功能
-        super().mousePressEvent(event)
-
-
 
 class MusicPlayer(QMainWindow):
     def __init__(self):
@@ -64,18 +23,12 @@ class MusicPlayer(QMainWindow):
         self.player2_playing = False
         self.player1_file = ""
         self.player2_file = ""
-        self.is_playing = False  # 全局播放状态
         
         # 音量控制状态
         self.volume_balance = 50  # 默认在中间位置
         
-
-        
-        # 配置文件路径
-        self.config_file = "player_config.json"
-        
-        # 暂停状态下的更新计数器
-        self.pause_update_counter = 0
+        # 用户拖动状态标记
+        self.user_seeking = False
         
         # 进度条更新定时器
         self.timer = QTimer()
@@ -84,9 +37,6 @@ class MusicPlayer(QMainWindow):
         
         self.init_ui()
         self.setup_connections()
-        
-        # 在UI初始化后加载配置
-        self.load_config()
         
     def init_ui(self):
         central_widget = QWidget()
@@ -105,12 +55,10 @@ class MusicPlayer(QMainWindow):
         progress_layout = QVBoxLayout(progress_group)
         
         # 进度条
-        self.progress_bar = ClickJumpSlider(Qt.Horizontal)
+        self.progress_bar = QSlider(Qt.Horizontal)
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
-        
-
         self.progress_bar.setStyleSheet("""
             QSlider::groove:horizontal {
                 border: 1px solid #999999;
@@ -150,7 +98,7 @@ class MusicPlayer(QMainWindow):
         volume_layout.addWidget(volume_info)
         
         # 音量平衡滑块
-        self.volume_balance_slider = ClickJumpSlider(Qt.Horizontal, slider_type="volume")
+        self.volume_balance_slider = QSlider(Qt.Horizontal)
         self.volume_balance_slider.setMinimum(0)
         self.volume_balance_slider.setMaximum(100)
         self.volume_balance_slider.setValue(50)  # 默认在中间
@@ -195,28 +143,12 @@ class MusicPlayer(QMainWindow):
         # 全局控制按钮
         global_controls = QHBoxLayout()
         
-        self.play_pause_btn = QPushButton("▶ 播放")
-        self.stop_all_btn = QPushButton("⏹ 停止")
+        self.play_all_btn = QPushButton("播放")
+        self.pause_all_btn = QPushButton("暂停")
+        self.stop_all_btn = QPushButton("停止")
         
-        # 设置播放/暂停按钮样式
-        self.play_pause_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                border: none;
-                color: white;
-                padding: 12px 24px;
-                text-align: center;
-                font-size: 16px;
-                font-weight: bold;
-                margin: 4px 2px;
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
-        
-        global_controls.addWidget(self.play_pause_btn)
+        global_controls.addWidget(self.play_all_btn)
+        global_controls.addWidget(self.pause_all_btn)
         global_controls.addWidget(self.stop_all_btn)
         
         main_layout.addLayout(global_controls)
@@ -303,22 +235,18 @@ class MusicPlayer(QMainWindow):
         self.player2_select_btn.clicked.connect(lambda: self.select_file(2))
         
         # 全局控制连接
-        self.play_pause_btn.clicked.connect(self.toggle_play_pause)
+        self.play_all_btn.clicked.connect(self.play_all)
+        self.pause_all_btn.clicked.connect(self.pause_all)
         self.stop_all_btn.clicked.connect(self.stop_all)
         
         # 进度条连接
         self.progress_bar.sliderPressed.connect(self.progress_pressed)
         self.progress_bar.sliderReleased.connect(self.progress_released)
         self.progress_bar.sliderMoved.connect(self.progress_moved)
+        self.progress_bar.valueChanged.connect(self.progress_value_changed)
         
         # 音量平衡连接
         self.volume_balance_slider.valueChanged.connect(self.update_volume_balance)
-        
-        # 设置进度条点击回调
-        self.progress_bar.set_parent_player(self)
-        
-        # 设置音量平衡滑块点击回调
-        self.volume_balance_slider.set_parent_player(self)
         
     def select_file(self, player_num):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -339,9 +267,6 @@ class MusicPlayer(QMainWindow):
                 self.player2_file_label.setText(os.path.basename(file_path))
                 self.player2_status_label.setText("文件已加载")
                 self.player2.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
-            
-            # 保存配置
-            self.save_config()
                 
     def update_volume_balance(self, value):
         """更新音量平衡"""
@@ -376,11 +301,6 @@ class MusicPlayer(QMainWindow):
             self.player2_playing = True
             self.player2_status_label.setText("播放中")
         
-        # 更新全局播放状态
-        if self.player1_file or self.player2_file:
-            self.is_playing = True
-            self.update_play_pause_button()
-        
     def pause_all(self):
         """暂停所有音乐"""
         if self.player1_file:
@@ -392,10 +312,6 @@ class MusicPlayer(QMainWindow):
             self.player2.pause()
             self.player2_playing = False
             self.player2_status_label.setText("已暂停")
-        
-        # 更新全局播放状态
-        self.is_playing = False
-        self.update_play_pause_button()
         
     def stop_all(self):
         """停止所有音乐"""
@@ -409,12 +325,9 @@ class MusicPlayer(QMainWindow):
             self.player2_playing = False
             self.player2_status_label.setText("已停止")
         
-        # 更新全局播放状态
-        self.is_playing = False
-        self.update_play_pause_button()
-        
     def progress_pressed(self):
-        # 暂停进度条更新
+        # 开始用户拖动，暂停进度条更新
+        self.user_seeking = True
         self.timer.stop()
         
     def progress_moved(self, position):
@@ -422,10 +335,19 @@ class MusicPlayer(QMainWindow):
         self.update_time_display_from_position(position)
         
     def progress_released(self):
-        # 恢复进度条更新
+        # 结束用户拖动，恢复进度条更新
+        self.user_seeking = False
+        self.set_position_from_progress()
         self.timer.start(100)
         
-        # 获取进度条位置
+    def progress_value_changed(self, position):
+        # 处理点击进度条的情况
+        if not self.user_seeking:
+            # 如果不是拖动状态，说明是点击，直接跳转
+            self.set_position_from_progress()
+            
+    def set_position_from_progress(self):
+        """根据进度条位置设置播放器位置"""
         position = self.progress_bar.value()
         
         # 计算实际时间位置并设置到播放器（无论是否正在播放）
@@ -440,52 +362,17 @@ class MusicPlayer(QMainWindow):
             if duration > 0:
                 new_position = int((position / 100.0) * duration)
                 self.player2.setPosition(new_position)
-        
-    def on_progress_clicked(self, value):
-        """处理进度条点击跳转"""
-        # 计算新的播放位置
-        if self.player1_file:
-            duration = self.player1.duration()
-            if duration > 0:
-                new_position = int((value / 100.0) * duration)
-                self.player1.setPosition(new_position)
                 
-        if self.player2_file:
-            duration = self.player2.duration()
-            if duration > 0:
-                new_position = int((value / 100.0) * duration)
-                self.player2.setPosition(new_position)
-                
-        # 立即更新时间显示
-        self.update_time_display_from_position(value)
-        
-    def on_volume_clicked(self, value):
-        """处理音量平衡滑块点击"""
-        # 直接调用音量平衡更新方法
-        self.update_volume_balance(value)
-
     def update_progress(self):
-        # 判断是否有任何播放器在播放
-        is_any_playing = self.player1_playing or self.player2_playing
-        
-        if is_any_playing:
-            # 播放状态：正常获取位置信息
-            player1_pos = self.player1.position() if self.player1_playing else 0
-            player2_pos = self.player2.position() if self.player2_playing else 0
-            self.pause_update_counter = 0  # 重置暂停计数器
-        else:
-            # 暂停状态：减少position()调用频率
-            self.pause_update_counter += 1
-            if self.pause_update_counter >= 10:  # 每1秒更新一次（100ms * 10）
-                player1_pos = self.player1.position() if self.player1_file else 0
-                player2_pos = self.player2.position() if self.player2_file else 0
-                self.pause_update_counter = 0
-            else:
-                # 跳过这次更新，保持当前显示
-                return
-        
-        # 获取时长信息（这个调用开销较小）
+        # 如果用户正在拖动，不更新进度条
+        if self.user_seeking:
+            return
+            
+        # 获取两个播放器的状态（无论是否在播放都获取位置）
+        player1_pos = self.player1.position() if self.player1_file else 0
         player1_duration = self.player1.duration() if self.player1_file else 0
+        
+        player2_pos = self.player2.position() if self.player2_file else 0
         player2_duration = self.player2.duration() if self.player2_file else 0
         
         # 计算平均进度
@@ -511,7 +398,6 @@ class MusicPlayer(QMainWindow):
                 total_time = self.format_time(max_duration)
                 self.time_label.setText(f"{current_time} / {total_time}")
     
-
     def update_time_display_from_position(self, position):
         """根据进度条位置更新时间显示"""
         # 获取最长的音频文件时长
@@ -531,102 +417,6 @@ class MusicPlayer(QMainWindow):
         minutes = seconds // 60
         seconds = seconds % 60
         return f"{minutes:02d}:{seconds:02d}"
-    
-    def load_config(self):
-        """加载配置文件"""
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    
-                # 加载上次的文件路径
-                if 'player1_file' in config and config['player1_file']:
-                    if os.path.exists(config['player1_file']):
-                        self.player1_file = config['player1_file']
-                        self.player1_file_label.setText(os.path.basename(self.player1_file))
-                        self.player1_status_label.setText("文件已加载")
-                        self.player1.setMedia(QMediaContent(QUrl.fromLocalFile(self.player1_file)))
-                        
-                if 'player2_file' in config and config['player2_file']:
-                    if os.path.exists(config['player2_file']):
-                        self.player2_file = config['player2_file']
-                        self.player2_file_label.setText(os.path.basename(self.player2_file))
-                        self.player2_status_label.setText("文件已加载")
-                        self.player2.setMedia(QMediaContent(QUrl.fromLocalFile(self.player2_file)))
-                        
-                # 加载音量平衡设置
-                if 'volume_balance' in config:
-                    self.volume_balance = config['volume_balance']
-                    self.volume_balance_slider.setValue(self.volume_balance)
-                    self.update_volume_balance(self.volume_balance)
-                    
-        except Exception as e:
-            print(f"加载配置文件出错: {e}")
-    
-
-    def save_config(self):
-        """保存配置文件"""
-        try:
-            config = {
-                'player1_file': self.player1_file,
-                'player2_file': self.player2_file,
-                'volume_balance': self.volume_balance
-            }
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"保存配置文件出错: {e}")
-    
-    def closeEvent(self, event):
-        """程序关闭时保存配置"""
-        self.save_config()
-        event.accept()
-    
-    def toggle_play_pause(self):
-        """切换播放/暂停状态"""
-        if self.is_playing:
-            self.pause_all()
-        else:
-            self.play_all()
-    
-    def update_play_pause_button(self):
-        """更新播放/暂停按钮显示"""
-        if self.is_playing:
-            self.play_pause_btn.setText("⏸ 暂停")
-            self.play_pause_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF9800;
-                    border: none;
-                    color: white;
-                    padding: 12px 24px;
-                    text-align: center;
-                    font-size: 16px;
-                    font-weight: bold;
-                    margin: 4px 2px;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #F57C00;
-                }
-            """)
-        else:
-            self.play_pause_btn.setText("▶ 播放")
-            self.play_pause_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    border: none;
-                    color: white;
-                    padding: 12px 24px;
-                    text-align: center;
-                    font-size: 16px;
-                    font-weight: bold;
-                    margin: 4px 2px;
-                    border-radius: 6px;
-                }
-                QPushButton:hover {
-                    background-color: #45a049;
-                }
-            """)
 
 def main():
     app = QApplication(sys.argv)
