@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtCore import QUrl
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont, QTextCursor, QFontDatabase
 import time
 
 class ClickJumpSlider(QSlider):
@@ -53,6 +53,7 @@ class LyricDisplay(QTextEdit):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.parent_window = parent
         self.setup_ui()
         
     def setup_ui(self):
@@ -60,50 +61,106 @@ class LyricDisplay(QTextEdit):
         # 设置只读
         self.setReadOnly(True)
         
-        # 设置字体 - 使用思源黑体
-        font = QFont("Source Han Sans CN", 14)
+        # 加载思源黑体字体文件
+        font_path = "SourceHanSansSC-Regular-2.otf"
+        if os.path.exists(font_path):
+            font_id = QFontDatabase.addApplicationFont(font_path)
+            if font_id != -1:
+                font_families = QFontDatabase.applicationFontFamilies(font_id)
+                if font_families:
+                    font_family = font_families[0]
+                    font = QFont(font_family, 18)
+                else:
+                    # 回退到系统字体
+                    font = QFont("Microsoft YaHei", 18)
+            else:
+                # 回退到系统字体
+                font = QFont("Microsoft YaHei", 18)
+        else:
+            # 回退到系统字体
+            font = QFont("Microsoft YaHei", 18)
+        
         self.setFont(font)
         
-        # 设置样式
+        # 设置样式，支持垂直居中
         self.setStyleSheet("""
             QTextEdit {
                 background-color: #f8f9fa;
                 border: 2px solid #dee2e6;
                 border-radius: 8px;
-                padding: 10px;
+                padding: 15px;
                 color: #495057;
                 selection-background-color: #007bff;
             }
         """)
         
-        # 设置固定高度
-        self.setFixedHeight(120)
+        # 设置最小高度，允许随窗口调整
+        self.setMinimumHeight(150)
         
-        # 设置文本对齐方式
-        self.setAlignment(Qt.AlignCenter)
+        # 设置垂直滚动条策略
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
-        # 初始化显示
-        self.setPlainText("请选择歌词文件开始伴唱...")
+        # 初始化显示 - 先设置为空，后续会通过refresh_lyrics_display更新
+        self.setPlainText("")
         
+    def get_dynamic_font_sizes(self):
+        """根据窗口大小计算动态字体大小"""
+        if self.parent_window:
+            window_width = self.parent_window.width()
+            window_height = self.parent_window.height()
+            # 基础字体大小根据窗口宽度和高度调整
+            width_factor = max(14, min(32, int(window_width / 35)))
+            height_factor = max(14, min(32, int(window_height / 25)))
+            base_size = min(width_factor, height_factor)
+            current_size = base_size + 10
+            side_size = base_size - 2
+        else:
+            current_size = 26
+            side_size = 18
+        
+        return current_size, side_size
+    
     def update_lyrics(self, current_line, prev_line="", next_line=""):
         """更新歌词显示"""
-        # 构建三行歌词文本
-        lyrics_text = ""
+        # 获取动态字体大小
+        current_size, side_size = self.get_dynamic_font_sizes()
         
+        # 获取控件高度，估算每行的高度
+        widget_height = self.height()
+        font_height = current_size + 8  # 估算每行高度（包括行间距）
+        
+        # 计算可显示的行数和需要的空行数
+        total_lines = max(1, (widget_height - 60) // font_height)  # 减去padding
+        content_lines = 3  # 歌词占3行
+        empty_lines_top = max(0, (total_lines - content_lines) // 2)
+        
+        # 构建垂直居中的HTML文本
+        lyrics_text = "<div style='text-align: center; line-height: 1.4;'>"
+        
+        # 添加顶部空行实现垂直居中
+        for _ in range(empty_lines_top):
+            lyrics_text += f"<p style='font-size: {font_height}px; margin: 0; height: {font_height}px;'>&nbsp;</p>"
+        
+        # 上一行歌词（较小字体，灰色）
         if prev_line:
-            lyrics_text += f"<p style='color: #6c757d; font-size: 12px;'>{prev_line}</p>"
+            lyrics_text += f"<p style='color: #6c757d; font-size: {side_size}px; margin: 2px 0; font-weight: normal;'>{prev_line}</p>"
         else:
-            lyrics_text += "<p style='color: #6c757d; font-size: 12px;'>&nbsp;</p>"
+            lyrics_text += f"<p style='color: #6c757d; font-size: {side_size}px; margin: 2px 0; font-weight: normal;'>&nbsp;</p>"
             
+        # 当前行歌词（大字体，蓝色加粗）
         if current_line:
-            lyrics_text += f"<p style='color: #007bff; font-size: 16px; font-weight: bold;'>{current_line}</p>"
+            lyrics_text += f"<p style='color: #007bff; font-size: {current_size}px; font-weight: bold; margin: 4px 0;'>{current_line}</p>"
         else:
-            lyrics_text += "<p style='color: #007bff; font-size: 16px; font-weight: bold;'>&nbsp;</p>"
+            lyrics_text += f"<p style='color: #007bff; font-size: {current_size}px; font-weight: bold; margin: 4px 0;'>&nbsp;</p>"
             
+        # 下一行歌词（较小字体，灰色）
         if next_line:
-            lyrics_text += f"<p style='color: #6c757d; font-size: 12px;'>{next_line}</p>"
+            lyrics_text += f"<p style='color: #6c757d; font-size: {side_size}px; margin: 2px 0; font-weight: normal;'>{next_line}</p>"
         else:
-            lyrics_text += "<p style='color: #6c757d; font-size: 12px;'>&nbsp;</p>"
+            lyrics_text += f"<p style='color: #6c757d; font-size: {side_size}px; margin: 2px 0; font-weight: normal;'>&nbsp;</p>"
+        
+        lyrics_text += "</div>"
         
         # 设置HTML文本
         self.setHtml(lyrics_text)
@@ -165,9 +222,12 @@ class MusicPlayer(QMainWindow):
         lyric_group = QGroupBox("歌词展示")
         lyric_layout = QVBoxLayout(lyric_group)
         
-        self.lyric_display = LyricDisplay()
+        self.lyric_display = LyricDisplay(self)
         lyric_layout.addWidget(self.lyric_display)
         main_layout.addWidget(lyric_group)
+        
+        # 延迟初始化歌词显示，确保控件已经完全渲染
+        QTimer.singleShot(100, self.init_lyric_display)
         
         # 共享进度条区域
         progress_group = QGroupBox("播放进度控制")
@@ -505,20 +565,29 @@ class MusicPlayer(QMainWindow):
             
             print(f"加载了 {len(self.lyrics)} 行歌词")
             
+            # 歌词加载后立即显示第一行
+            if self.lyrics:
+                first_line = self.lyrics[0]['text']
+                second_line = self.lyrics[1]['text'] if len(self.lyrics) > 1 else ""
+                self.lyric_display.update_lyrics(first_line, "", second_line)
+            else:
+                self.lyric_display.setPlainText("歌词文件无有效内容")
+            
         except Exception as e:
             print(f"加载歌词文件失败: {e}")
             self.lyrics = []
+            self.lyric_display.setPlainText("歌词文件加载失败")
     
     def update_lyrics(self):
         """更新歌词显示"""
-        if not self.lyrics or not self.is_playing:
+        if not self.lyrics:
             return
         
         # 获取当前播放时间
         current_time = 0
-        if self.player1_playing:
+        if self.player1_file:
             current_time = self.player1.position()
-        elif self.player2_playing:
+        elif self.player2_file:
             current_time = self.player2.position()
         
         # 查找当前应该显示的歌词
@@ -579,6 +648,9 @@ class MusicPlayer(QMainWindow):
         if self.player1_file or self.player2_file:
             self.is_playing = True
             self.update_play_pause_button()
+            
+            # 立即更新一次歌词显示
+            self.update_lyrics()
         
     def pause_all(self):
         """暂停所有音乐"""
@@ -640,6 +712,9 @@ class MusicPlayer(QMainWindow):
                 new_position = int((position / 100.0) * duration)
                 self.player2.setPosition(new_position)
         
+        # 立即更新歌词显示
+        self.update_lyrics()
+        
     def on_progress_clicked(self, value):
         """处理进度条点击跳转"""
         # 计算新的播放位置
@@ -657,6 +732,9 @@ class MusicPlayer(QMainWindow):
                 
         # 立即更新时间显示
         self.update_time_display_from_position(value)
+        
+        # 立即更新歌词显示
+        self.update_lyrics()
         
     def on_volume_clicked(self, value):
         """处理音量平衡滑块点击"""
@@ -784,6 +862,47 @@ class MusicPlayer(QMainWindow):
                 json.dump(config, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"保存配置文件出错: {e}")
+    
+    def resizeEvent(self, event):
+        """窗口大小改变时更新歌词字体"""
+        super().resizeEvent(event)
+        # 如果有歌词显示，触发一次更新以调整字体大小
+        if hasattr(self, 'lyric_display'):
+            # 使用QTimer延迟更新，避免频繁刷新
+            QTimer.singleShot(50, self.refresh_lyrics_display)
+    
+    def init_lyric_display(self):
+        """初始化歌词显示"""
+        self.refresh_lyrics_display()
+    
+    def refresh_lyrics_display(self):
+        """刷新歌词显示"""
+        if self.lyrics:
+            self.update_lyrics()
+        else:
+            # 即使没有歌词，也要更新初始显示的字体大小和居中
+            current_size, _ = self.lyric_display.get_dynamic_font_sizes()
+            widget_height = self.lyric_display.height()
+            font_height = current_size + 8
+            
+            # 计算垂直居中需要的空行数
+            total_lines = max(1, (widget_height - 60) // font_height)
+            content_lines = 1  # 提示文本占1行
+            empty_lines_top = max(0, (total_lines - content_lines) // 2)
+            
+            # 使用空行实现垂直居中
+            centered_text = "<div style='text-align: center; line-height: 1.4;'>"
+            
+            # 添加顶部空行
+            for _ in range(empty_lines_top):
+                centered_text += f"<p style='font-size: {font_height}px; margin: 0; height: {font_height}px;'>&nbsp;</p>"
+            
+            # 添加提示文本
+            centered_text += f"<p style='color: #495057; font-size: {current_size - 4}px; margin: 0; font-weight: normal;'>请选择歌词文件开始伴唱...</p>"
+            
+            centered_text += "</div>"
+            
+            self.lyric_display.setHtml(centered_text)
     
     def closeEvent(self, event):
         """程序关闭时保存配置"""
