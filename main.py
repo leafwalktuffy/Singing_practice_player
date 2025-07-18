@@ -3,10 +3,11 @@ import os
 import json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                              QWidget, QPushButton, QSlider, QLabel, QFileDialog, 
-                             QProgressBar, QGroupBox, QGridLayout, QFrame)
+                             QProgressBar, QGroupBox, QGridLayout, QFrame, QTextEdit)
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtCore import QUrl
+from PyQt5.QtGui import QFont, QTextCursor
 import time
 
 class ClickJumpSlider(QSlider):
@@ -47,13 +48,71 @@ class ClickJumpSlider(QSlider):
         # 调用父类方法保持正常拖动功能
         super().mousePressEvent(event)
 
-
+class LyricDisplay(QTextEdit):
+    """歌词展示组件"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """设置歌词展示界面"""
+        # 设置只读
+        self.setReadOnly(True)
+        
+        # 设置字体 - 使用思源黑体
+        font = QFont("Source Han Sans CN", 14)
+        self.setFont(font)
+        
+        # 设置样式
+        self.setStyleSheet("""
+            QTextEdit {
+                background-color: #f8f9fa;
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                padding: 10px;
+                color: #495057;
+                selection-background-color: #007bff;
+            }
+        """)
+        
+        # 设置固定高度
+        self.setFixedHeight(120)
+        
+        # 设置文本对齐方式
+        self.setAlignment(Qt.AlignCenter)
+        
+        # 初始化显示
+        self.setPlainText("请选择歌词文件开始伴唱...")
+        
+    def update_lyrics(self, current_line, prev_line="", next_line=""):
+        """更新歌词显示"""
+        # 构建三行歌词文本
+        lyrics_text = ""
+        
+        if prev_line:
+            lyrics_text += f"<p style='color: #6c757d; font-size: 12px;'>{prev_line}</p>"
+        else:
+            lyrics_text += "<p style='color: #6c757d; font-size: 12px;'>&nbsp;</p>"
+            
+        if current_line:
+            lyrics_text += f"<p style='color: #007bff; font-size: 16px; font-weight: bold;'>{current_line}</p>"
+        else:
+            lyrics_text += "<p style='color: #007bff; font-size: 16px; font-weight: bold;'>&nbsp;</p>"
+            
+        if next_line:
+            lyrics_text += f"<p style='color: #6c757d; font-size: 12px;'>{next_line}</p>"
+        else:
+            lyrics_text += "<p style='color: #6c757d; font-size: 12px;'>&nbsp;</p>"
+        
+        # 设置HTML文本
+        self.setHtml(lyrics_text)
 
 class MusicPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("伴奏人声分离播放器")
-        self.setGeometry(100, 100, 800, 600)
+        self.setWindowTitle("伴唱播放器")
+        self.setGeometry(100, 100, 900, 700)
         
         # 初始化两个媒体播放器
         self.player1 = QMediaPlayer()
@@ -64,12 +123,15 @@ class MusicPlayer(QMainWindow):
         self.player2_playing = False
         self.player1_file = ""
         self.player2_file = ""
+        self.lyric_file = ""
         self.is_playing = False  # 全局播放状态
         
         # 音量控制状态
         self.volume_balance = 50  # 默认在中间位置
         
-
+        # 歌词相关
+        self.lyrics = []  # 存储歌词数据
+        self.current_lyric_index = 0  # 当前歌词索引
         
         # 配置文件路径
         self.config_file = "player_config.json"
@@ -81,6 +143,11 @@ class MusicPlayer(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_progress)
         self.timer.start(100)  # 每100ms更新一次
+        
+        # 歌词更新定时器
+        self.lyric_timer = QTimer()
+        self.lyric_timer.timeout.connect(self.update_lyrics)
+        self.lyric_timer.start(100)  # 每100ms更新一次歌词
         
         self.init_ui()
         self.setup_connections()
@@ -94,11 +161,13 @@ class MusicPlayer(QMainWindow):
         
         main_layout = QVBoxLayout(central_widget)
         
-        # 标题
-        title_label = QLabel("伴奏人声分离播放器")
-        title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin: 10px;")
-        title_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(title_label)
+        # 歌词展示区域
+        lyric_group = QGroupBox("歌词展示")
+        lyric_layout = QVBoxLayout(lyric_group)
+        
+        self.lyric_display = LyricDisplay()
+        lyric_layout.addWidget(self.lyric_display)
+        main_layout.addWidget(lyric_group)
         
         # 共享进度条区域
         progress_group = QGroupBox("播放进度控制")
@@ -110,7 +179,6 @@ class MusicPlayer(QMainWindow):
         self.progress_bar.setMaximum(100)
         self.progress_bar.setValue(0)
         
-
         self.progress_bar.setStyleSheet("""
             QSlider::groove:horizontal {
                 border: 1px solid #999999;
@@ -179,18 +247,23 @@ class MusicPlayer(QMainWindow):
         volume_layout.addWidget(self.volume_balance_label)
         main_layout.addWidget(volume_group)
         
-        # 播放器控制区域
-        players_layout = QHBoxLayout()
+        # 文件选择区域 - 三个并列
+        files_group = QGroupBox("文件选择")
+        files_layout = QHBoxLayout(files_group)
         
         # 伴奏播放器
         accompaniment_group = self.create_player_group("伴奏", 1)
-        players_layout.addWidget(accompaniment_group)
+        files_layout.addWidget(accompaniment_group)
         
         # 人声播放器
         vocal_group = self.create_player_group("人声", 2)
-        players_layout.addWidget(vocal_group)
+        files_layout.addWidget(vocal_group)
         
-        main_layout.addLayout(players_layout)
+        # 歌词文件选择
+        lyric_group = self.create_lyric_group()
+        files_layout.addWidget(lyric_group)
+        
+        main_layout.addWidget(files_group)
         
         # 全局控制按钮
         global_controls = QHBoxLayout()
@@ -294,6 +367,29 @@ class MusicPlayer(QMainWindow):
             self.player2_status_label = status_label
             
         return group
+    
+    def create_lyric_group(self):
+        """创建歌词文件选择组"""
+        group = QGroupBox("歌词")
+        layout = QVBoxLayout(group)
+        
+        # 文件选择按钮
+        self.lyric_select_btn = QPushButton("选择歌词文件")
+        layout.addWidget(self.lyric_select_btn)
+        
+        # 文件路径标签
+        self.lyric_file_label = QLabel("未选择文件")
+        self.lyric_file_label.setWordWrap(True)
+        self.lyric_file_label.setStyleSheet("background-color: #f0f0f0; padding: 5px; border-radius: 3px;")
+        layout.addWidget(self.lyric_file_label)
+        
+        # 状态标签
+        self.lyric_status_label = QLabel("就绪")
+        self.lyric_status_label.setAlignment(Qt.AlignCenter)
+        self.lyric_status_label.setStyleSheet("color: #666666; font-style: italic;")
+        layout.addWidget(self.lyric_status_label)
+        
+        return group
         
     def setup_connections(self):
         # 播放器1连接
@@ -301,6 +397,9 @@ class MusicPlayer(QMainWindow):
         
         # 播放器2连接
         self.player2_select_btn.clicked.connect(lambda: self.select_file(2))
+        
+        # 歌词文件连接
+        self.lyric_select_btn.clicked.connect(self.select_lyric_file)
         
         # 全局控制连接
         self.play_pause_btn.clicked.connect(self.toggle_play_pause)
@@ -342,6 +441,106 @@ class MusicPlayer(QMainWindow):
             
             # 保存配置
             self.save_config()
+    
+    def select_lyric_file(self):
+        """选择歌词文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择歌词文件",
+            "",
+            "歌词文件 (*.lrc *.txt);;所有文件 (*)"
+        )
+        
+        if file_path:
+            self.lyric_file = file_path
+            self.lyric_file_label.setText(os.path.basename(file_path))
+            self.lyric_status_label.setText("文件已加载")
+            
+            # 加载歌词
+            self.load_lyrics(file_path)
+            
+            # 保存配置
+            self.save_config()
+    
+    def load_lyrics(self, file_path):
+        """加载歌词文件"""
+        try:
+            self.lyrics = []
+            self.current_lyric_index = 0
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            for line in lines:
+                line = line.strip()
+                if line and line.startswith('['):
+                    # 解析LRC格式的时间标签
+                    try:
+                        time_str = line[1:line.find(']')]
+                        text = line[line.find(']')+1:].strip()
+                        
+                        if text and ':' in time_str:
+                            # 解析时间
+                            time_parts = time_str.split(':')
+                            if len(time_parts) == 2:
+                                minutes = int(time_parts[0])
+                                seconds = float(time_parts[1])
+                                time_ms = int((minutes * 60 + seconds) * 1000)
+                                
+                                self.lyrics.append({
+                                    'time': time_ms,
+                                    'text': text
+                                })
+                    except:
+                        continue
+                elif line and not line.startswith('['):
+                    # 普通文本行
+                    self.lyrics.append({
+                        'time': len(self.lyrics) * 3000,  # 每行3秒
+                        'text': line
+                    })
+            
+            # 按时间排序
+            self.lyrics.sort(key=lambda x: x['time'])
+            
+            print(f"加载了 {len(self.lyrics)} 行歌词")
+            
+        except Exception as e:
+            print(f"加载歌词文件失败: {e}")
+            self.lyrics = []
+    
+    def update_lyrics(self):
+        """更新歌词显示"""
+        if not self.lyrics or not self.is_playing:
+            return
+        
+        # 获取当前播放时间
+        current_time = 0
+        if self.player1_playing:
+            current_time = self.player1.position()
+        elif self.player2_playing:
+            current_time = self.player2.position()
+        
+        # 查找当前应该显示的歌词
+        current_lyric = ""
+        prev_lyric = ""
+        next_lyric = ""
+        
+        for i, lyric in enumerate(self.lyrics):
+            if lyric['time'] <= current_time:
+                current_lyric = lyric['text']
+                self.current_lyric_index = i
+                
+                # 获取上一行歌词
+                if i > 0:
+                    prev_lyric = self.lyrics[i-1]['text']
+                
+                # 获取下一行歌词
+                if i < len(self.lyrics) - 1:
+                    next_lyric = self.lyrics[i+1]['text']
+        
+        # 更新歌词显示
+        self.lyric_display.update_lyrics(current_lyric, prev_lyric, next_lyric)
                 
     def update_volume_balance(self, value):
         """更新音量平衡"""
@@ -553,6 +752,14 @@ class MusicPlayer(QMainWindow):
                         self.player2_file_label.setText(os.path.basename(self.player2_file))
                         self.player2_status_label.setText("文件已加载")
                         self.player2.setMedia(QMediaContent(QUrl.fromLocalFile(self.player2_file)))
+                
+                # 加载歌词文件
+                if 'lyric_file' in config and config['lyric_file']:
+                    if os.path.exists(config['lyric_file']):
+                        self.lyric_file = config['lyric_file']
+                        self.lyric_file_label.setText(os.path.basename(self.lyric_file))
+                        self.lyric_status_label.setText("文件已加载")
+                        self.load_lyrics(self.lyric_file)
                         
                 # 加载音量平衡设置
                 if 'volume_balance' in config:
@@ -570,6 +777,7 @@ class MusicPlayer(QMainWindow):
             config = {
                 'player1_file': self.player1_file,
                 'player2_file': self.player2_file,
+                'lyric_file': self.lyric_file,
                 'volume_balance': self.volume_balance
             }
             with open(self.config_file, 'w', encoding='utf-8') as f:
